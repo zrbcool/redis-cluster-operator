@@ -2,6 +2,7 @@ package rediscluster
 
 import (
 	"context"
+	"k8s.io/apimachinery/pkg/labels"
 	"strconv"
 	"time"
 
@@ -103,10 +104,11 @@ func (r *ReconcileRedisCluster) Reconcile(request reconcile.Request) (reconcile.
 		return reconcile.Result{}, err
 	}
 
+	var instances []string
 	for rsIndex := 1; rsIndex <= instance.Spec.Size; rsIndex++ {
-		found := &appsv1.ReplicaSet{}
+		replicaSet := &appsv1.ReplicaSet{}
 		rsName := instance.Name + "-rs-" + strconv.Itoa(rsIndex)
-		err = r.client.Get(context.TODO(), types.NamespacedName{Name: rsName, Namespace: instance.Namespace}, found)
+		err = r.client.Get(context.TODO(), types.NamespacedName{Name: rsName, Namespace: instance.Namespace}, replicaSet)
 
 		if err != nil && errors.IsNotFound(err) {
 			var rs = newReplicaSetForCR(instance, rsName)
@@ -119,37 +121,57 @@ func (r *ReconcileRedisCluster) Reconcile(request reconcile.Request) (reconcile.
 			}
 		} else {
 			//reqLogger.Info("ReplicaSet " + rsName + " already exist, skip ...")
+			podList := &corev1.PodList{}
+			labelSelector := labels.SelectorFromSet(labelsForPod(instance, replicaSet))
+			listOps := &client.ListOptions{
+				Namespace:     replicaSet.Namespace,
+				LabelSelector: labelSelector,
+			}
+			err = r.client.List(context.TODO(), listOps, podList)
+			if err != nil {
+				continue
+			}
+			podIps := getPodIps(podList.Items)
+			for _, temp := range podIps {
+				instances = append(instances, temp)
+			}
 			continue
 		}
 	}
 
-	//// Define a new Pod object
-	//pod := newPodForCR(instance)
-	//
-	//// Set RedisCluster instance as the owner and controller
-	//if err := controllerutil.SetControllerReference(instance, pod, r.scheme); err != nil {
-	//	return reconcile.Result{}, err
-	//}
-	//// Check if this Pod already exists
-	//found := &corev1.Pod{}
-	//err = r.client.Get(context.TODO(), types.NamespacedName{Name: pod.Name, Namespace: pod.Namespace}, found)
-	//if err != nil && errors.IsNotFound(err) {
-	//	reqLogger.Info("Creating a new Pod", "Pod.Namespace", pod.Namespace, "Pod.Name", pod.Name)
-	//	err = r.client.Create(context.TODO(), pod)
-	//	if err != nil {
-	//		return reconcile.Result{}, err
-	//	}
-	//
-	//	// Pod created successfully - don't requeue
-	//	return reconcile.Result{}, nil
-	//} else if err != nil {
-	//	return reconcile.Result{}, err
-	//}
-	//
-	//// Pod already exists - don't requeue
-	//reqLogger.Info("Skip reconcile: Pod already exists", "Pod.Namespace", found.Namespace, "Pod.Name", found.Name)
-	//return reconcile.Result{}, nil
+	available := int32(0)
+	current := int32(0)
+	for rsIndex := 1; rsIndex <= instance.Spec.Size; rsIndex++ {
+		found := &appsv1.ReplicaSet{}
+		rsName := instance.Name + "-rs-" + strconv.Itoa(rsIndex)
+		err = r.client.Get(context.TODO(), types.NamespacedName{Name: rsName, Namespace: instance.Namespace}, found)
+
+		if err != nil && errors.IsNotFound(err) {
+			continue
+		}
+
+		available += found.Status.AvailableReplicas
+		current++
+	}
+	instance.Status.Desired = int32(instance.Spec.Size)
+	instance.Status.Current = current
+	instance.Status.Ready = available
+	instance.Status.Instances = instances
+
+	if instance.Status.Desired == instance.Status.Ready {
+		instance.Status.ClusterStatus = "READY"
+		// 判断redis集群是否OK，如果OK则设置为CLUSTER-OK，否则为CLUSTER-FAIL，或者CLUSTER-CREATING
+	} else {
+		instance.Status.ClusterStatus = "FAIL"
+	}
+
+	_ = r.client.Status().Update(context.TODO(), instance)
+
 	return reconcile.Result{true, time.Duration(3) * time.Second}, nil
+}
+
+func labelsForPod(cr *redisoperatorv1alpha1.RedisCluster, rs *appsv1.ReplicaSet) map[string]string {
+	return map[string]string{"app": cr.Name, "rsName": rs.Name}
 }
 
 // newPodForCR returns a busybox pod with the same name/namespace as the cr
@@ -175,9 +197,18 @@ func newPodForCR(cr *redisoperatorv1alpha1.RedisCluster) *corev1.Pod {
 	}
 }
 
+func getPodIps(pods []corev1.Pod) []string {
+	var podIps []string
+	for _, pod := range pods {
+		podIps = append(podIps, pod.Status.PodIP)
+	}
+	return podIps
+}
+
 func newReplicaSetForCR(cr *redisoperatorv1alpha1.RedisCluster, rsName string) *appsv1.ReplicaSet {
 	labels := map[string]string{
-		"app": cr.Name,
+		"app":    cr.Name,
+		"rsName": rsName,
 	}
 	return &appsv1.ReplicaSet{
 		ObjectMeta: metav1.ObjectMeta{
