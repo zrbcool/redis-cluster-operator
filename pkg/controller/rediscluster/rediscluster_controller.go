@@ -167,6 +167,11 @@ func (r *ReconcileRedisCluster) Reconcile(request reconcile.Request) (reconcile.
 
 	_ = r.client.Status().Update(context.TODO(), instance)
 
+	// 如果集群状态为CLUSTER-OK，则更新zk中的节点情况
+	if instance.Status.ClusterStatus == "CLUSTER-OK" {
+		//
+	}
+
 	return reconcile.Result{true, time.Duration(3) * time.Second}, nil
 }
 
