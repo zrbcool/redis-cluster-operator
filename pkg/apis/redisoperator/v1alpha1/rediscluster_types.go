@@ -13,6 +13,8 @@ type RedisClusterSpec struct {
 	// INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
 	// Important: Run "operator-sdk generate k8s" to regenerate code after modifying this file
 	// Add custom validation using kubebuilder tags: https://book-v1.book.kubebuilder.io/beyond_basics/generating_crd.html
+	Size int    `json:"size"`
+	Mode string `json:"mode"`
 }
 
 // RedisClusterStatus defines the observed state of RedisCluster
@@ -21,6 +23,10 @@ type RedisClusterStatus struct {
 	// INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
 	// Important: Run "operator-sdk generate k8s" to regenerate code after modifying this file
 	// Add custom validation using kubebuilder tags: https://book-v1.book.kubebuilder.io/beyond_basics/generating_crd.html
+	Desired       int    `json:"desired"`
+	Current       int    `json:"current"`
+	Ready         int    `json:"ready"`
+	ClusterStatus string `json:"clusterStatus"`
 }
 
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
